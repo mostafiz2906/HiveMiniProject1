@@ -1,0 +1,382 @@
+--1. Create a schema based on the given dataset
+
+hdfs dfs -mkdir /files
+hdfs dfs -mkdir /files/AgentLogingReport
+hdfs dfs -mkdir /files/AgentPerformance
+
+hdfs dfs -put AgentPerformance.csv /files/AgentPerformance/
+hdfs dfs -put AgentLogingReport.csv /files/AgentLogingReport/
+
+create external table if not exists agent_logging_report_staging (
+serialNo INT,  
+name STRING,
+date string, 
+loginTime STRING,
+logoutTime STRING,
+duration STRING
+)
+row format delimited
+fields terminated by ','
+location '/files/AgentLogingReport'
+TBLPROPERTIES ("skip.header.line.count"="1");
+
+create table if not exists agent_logging_report (
+serialNo INT,  
+name STRING,
+date TIMESTAMP,
+loginTime TIMESTAMP,
+logoutTime TIMESTAMP,
+duration INT);
+
+create external table if not exists agent_performance_staging (
+serialNo INT, 
+date STRING, 
+name STRING,
+totalChats INT, 
+avgResponseTime STRING,
+avgResolutionTime STRING,
+avgRating DECIMAL(3,2), 
+totalFeedback INT
+)
+row format delimited
+fields terminated by ','
+location '/files/AgentPerformance'
+TBLPROPERTIES ("skip.header.line.count"="1");
+
+create table if not exists agent_performance (
+serialNo INT, 
+date TIMESTAMP, 
+name STRING,
+totalChats INT, 
+avgResponseTime INT,
+avgResolutionTime INT,
+avgRating DECIMAL(3,2), 
+totalFeedback INT);
+
+
+--2. Dump the data inside the hdfs in the given schema location.
+
+insert into agent_logging_report 
+select serialNo,
+name,
+from_unixtime(unix_timestamp(date,'dd-MMM-yy')),
+from_unixtime(unix_timestamp(concat(date,' ',loginTime),'dd-MMM-yy HH:mm:ss')),
+from_unixtime(unix_timestamp(concat(date,' ',logoutTime),
+'dd-MMM-yy HH:mm:ss')),substr(duration,0,instr(duration,':')-1)*3600+substr(substr(duration,instr(duration,':')+1),0,instr(substr(duration,instr(duration,':')+1),':')-1)*60+substr(substr(duration,instr(duration,':')+1),instr(substr(duration,instr(duration,':')+1),':')+1)
+from agent_logging_report_staging;
+
+insert into agent_performance
+select serialNo,
+from_unixtime(unix_timestamp(date,'MM/dd/yyyy')),
+name,
+totalChats,
+substr(avgResponseTime,0,instr(avgResponseTime,':')-1)*3600+substr(substr(avgResponseTime,instr(avgResponseTime,':')+1),0,instr(substr(avgResponseTime,instr(avgResponseTime,':')+1),':')-1)*60+substr(substr(avgResponseTime,instr(avgResponseTime,':')+1),instr(substr(avgResponseTime,instr(avgResponseTime,':')+1),':')+1) ,
+substr(avgResolutionTime,0,instr(avgResolutionTime,':')-1)*3600+substr(substr(avgResolutionTime,instr(avgResolutionTime,':')+1),0,instr(substr(avgResolutionTime,instr(avgResolutionTime,':')+1),':')-1)*60+substr(substr(avgResolutionTime,instr(avgResolutionTime,':')+1),instr(substr(avgResolutionTime,instr(avgResolutionTime,':')+1),':')+1) ,
+avgRating,
+totalFeedback 
+from agent_performance_staging;
+
+
+
+
+
+--3. List of all agents' names. 
+
+select distinct name from agent_logging_report;
+
+
+--4. Find out agent average rating.
+
+select 
+avg(avgRating) as average_rating
+from agent_performance;
+
+
+--5. Total working days for each agents 
+
+select 
+name as agent_name,
+count(distinct date) as total_working_days
+from agent_logging_report
+group by name;
+
+
+--6. Total query that each agent have taken 
+
+select 
+name as agent_name,
+sum(totalChats) as total_query_taken
+from agent_performance
+group by name
+order by total_query_taken desc;
+
+
+--7. Total Feedback that each agent have received
+
+select 
+name as agent_name,
+sum(totalFeedback) as total_feedback
+from agent_performance
+group by name
+order by total_feedback desc;
+
+
+--8. Agent name who have average rating between 3.5 to 4 
+
+WITH average_rating_by_agent AS(
+select 
+name as agent_name,
+sum(avgRating*totalFeedback)/sum(totalFeedback) as average_rating
+from agent_performance
+group by name
+)
+select * from average_rating_by_agent
+where average_rating between 3.5 and 4
+order by average_rating desc;
+
+
+--9. Agent name who have rating less than 3.5 
+
+select
+name as agent_name
+from agent_performance
+where totalChats <> 0
+group by name
+having max(avgRating) < 3.5;
+
+
+--10. Agent name who have rating more than 4.5 
+
+select
+name as agent_name
+from agent_performance
+where totalChats <> 0
+group by name
+having min(avgRating) > 4.5;
+
+
+--11. How many feedback agents have received more than 4.5 average
+
+WITH average_rating_by_agent AS(
+select 
+name as agent_name,
+round(sum(avgRating*totalFeedback)/sum(totalFeedback),2) as average_rating
+from agent_performance
+group by name
+)
+select * from average_rating_by_agent
+where average_rating > 4.5
+order by average_rating desc;
+
+
+--12. average weekly response time for each agent 
+-- If totalChats is 0 we ignore the row from calculating average
+
+select
+name as agentName, 
+concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1) as weekNo,
+round(avg(avgResponseTime)/60,2) as weeklyAvgResponseTimeInMinutes
+from agent_performance
+where totalChats <> 0 
+group by name,concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1)
+order by name,weekNo;
+
+
+--13. average weekly resolution time for each agents 
+-- If totalChats is 0 we ignore the row from calculating average
+
+select
+name as agentName, 
+concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1) as weekNo,
+round(avg(avgResolutionTime)/60,2) as weeklyAvgResolutionTimeInMinutes
+from agent_performance
+where totalChats <> 0 
+group by name,concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1)
+order by name,weekNo;
+
+
+--14. Find the number of chat on which they have received a feedback
+
+select
+name as agentName, 
+sum(totalChats) as totalChats,
+sum(totalFeedback) as feedbackReceivedChat
+from agent_performance
+group by name
+order by name;
+
+
+--15. Total contribution hour for each and every agents weekly basis 
+
+select
+name as agentName, 
+concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1) as weekNo,
+round(sum(duration)/3600,2) as weeklyContributionInHours
+from agent_logging_report
+group by name,concat('Week ',(weekofyear(date) - weekofyear(date_sub(date,dayofmonth(date))))+1)
+order by name,weekNo;
+
+
+--16. Perform inner join, left join and right join based on the agent column and after joining the table export that data into your --local system.
+
+CREATE TABLE agent_data_inner_join
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n'
+STORED as textfile
+AS
+select
+'SL No' as serialNo
+,'Agent' as name
+,'Date' as date
+,'Login Time' as loginTime
+,'Logout Time' as logoutTime
+,'Duration' as duration
+,'Performance SL No' as pSerialNo
+,'Performance Date' as pDate
+,'Total Chats' as totalChats
+,'Average Response Time' as avgResponseTime
+,'Average Resolution Time' as avgResolutionTime
+,'Average Rating' as avgRating
+,'Total Feedback' as totalfeedback;
+
+insert into agent_data_inner_join
+select
+alr.serialNo, 
+alr.name as agentName,
+from_unixtime(unix_timestamp(alr.date), 'dd-MMM-yy') as loginDate,
+from_unixtime(unix_timestamp(alr.loginTime), 'HH:mm:ss') as loginTime,
+from_unixtime(unix_timestamp(alr.logoutTime), 'HH:mm:ss') as logoutTime,
+concat(cast(floor(alr.duration/3600) as int),':',lpad(cast(floor((alr.duration%3600)/60) as int),2,'0'),':',lpad(cast(floor(alr.duration%60) as int),2,'0')) as duration,
+ap.serialNo as pSerialNo,
+from_unixtime(unix_timestamp(ap.date), 'M/dd/yyyy') as performanceDate,
+ap.totalChats,
+concat(cast(floor(ap.avgResponseTime/3600) as int),':',lpad(cast(floor((ap.avgResponseTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResponseTime%60) as int),2,'0')) as averageResponseTime,
+concat(cast(floor(ap.avgResolutionTime/3600) as int),':',lpad(cast(floor((ap.avgResolutionTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResolutionTime%60) as int),2,'0')) as averageResolutionTime,
+avgRating,
+totalFeedback
+from agent_logging_report alr
+join agent_performance ap on lower(trim(alr.name)) = lower(trim(ap.name));
+
+hadoop fs -cat hdfs://quickstart.cloudera:8020/user/hive/warehouse/agent_data_inner_join/* > ~/agent_data_inner_join.csv
+
+CREATE TABLE agent_data_left_join
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n'
+STORED as textfile
+AS
+select
+'SL No' as serialNo
+,'Agent' as name
+,'Date' as date
+,'Login Time' as loginTime
+,'Logout Time' as logoutTime
+,'Duration' as duration
+,'Performance SL No' as pSerialNo
+,'Performance Date' as pDate
+,'Total Chats' as totalChats
+,'Average Response Time' as avgResponseTime
+,'Average Resolution Time' as avgResolutionTime
+,'Average Rating' as avgRating
+,'Total Feedback' as totalfeedback;
+
+insert into agent_data_left_join
+select
+alr.serialNo, 
+alr.name as agentName,
+from_unixtime(unix_timestamp(alr.date), 'dd-MMM-yy') as loginDate,
+from_unixtime(unix_timestamp(alr.loginTime), 'HH:mm:ss') as loginTime,
+from_unixtime(unix_timestamp(alr.logoutTime), 'HH:mm:ss') as logoutTime,
+concat(cast(floor(alr.duration/3600) as int),':',lpad(cast(floor((alr.duration%3600)/60) as int),2,'0'),':',lpad(cast(floor(alr.duration%60) as int),2,'0')) as duration,
+ap.serialNo as pSerialNo,
+from_unixtime(unix_timestamp(ap.date), 'M/dd/yyyy') as performanceDate,
+ap.totalChats,
+concat(cast(floor(ap.avgResponseTime/3600) as int),':',lpad(cast(floor((ap.avgResponseTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResponseTime%60) as int),2,'0')) as averageResponseTime,
+concat(cast(floor(ap.avgResolutionTime/3600) as int),':',lpad(cast(floor((ap.avgResolutionTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResolutionTime%60) as int),2,'0')) as averageResolutionTime,
+avgRating,
+totalFeedback
+from agent_logging_report alr
+left join agent_performance ap on lower(trim(alr.name)) = lower(trim(ap.name));
+
+hadoop fs -cat hdfs://quickstart.cloudera:8020/user/hive/warehouse/agent_data_left_join/* > ~/agent_data_left_join.csv
+
+CREATE TABLE agent_data_right_join
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n'
+STORED as textfile
+AS
+select
+'SL No' as serialNo
+,'Agent' as name
+,'Date' as date
+,'Login Time' as loginTime
+,'Logout Time' as logoutTime
+,'Duration' as duration
+,'Performance SL No' as pSerialNo
+,'Performance Date' as pDate
+,'Total Chats' as totalChats
+,'Average Response Time' as avgResponseTime
+,'Average Resolution Time' as avgResolutionTime
+,'Average Rating' as avgRating
+,'Total Feedback' as totalfeedback;
+
+insert into agent_data_right_join
+select
+alr.serialNo, 
+alr.name as agentName,
+from_unixtime(unix_timestamp(alr.date), 'dd-MMM-yy') as loginDate,
+from_unixtime(unix_timestamp(alr.loginTime), 'HH:mm:ss') as loginTime,
+from_unixtime(unix_timestamp(alr.logoutTime), 'HH:mm:ss') as logoutTime,
+concat(cast(floor(alr.duration/3600) as int),':',lpad(cast(floor((alr.duration%3600)/60) as int),2,'0'),':',lpad(cast(floor(alr.duration%60) as int),2,'0')) as duration,
+ap.serialNo as pSerialNo,
+from_unixtime(unix_timestamp(ap.date), 'M/dd/yyyy') as performanceDate,
+ap.totalChats,
+concat(cast(floor(ap.avgResponseTime/3600) as int),':',lpad(cast(floor((ap.avgResponseTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResponseTime%60) as int),2,'0')) as averageResponseTime,
+concat(cast(floor(ap.avgResolutionTime/3600) as int),':',lpad(cast(floor((ap.avgResolutionTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResolutionTime%60) as int),2,'0')) as averageResolutionTime,
+avgRating,
+totalFeedback
+from agent_logging_report alr
+left join agent_performance ap on lower(trim(alr.name)) = lower(trim(ap.name));
+
+hadoop fs -cat hdfs://quickstart.cloudera:8020/user/hive/warehouse/agent_data_right_join/* > ~/agent_data_right_join.csv
+
+
+--17. Perform partitioning on top of the agent column and then on top of that perform bucketing for each partitioning.
+
+CREATE TABLE agent_data_partitioned_clustered
+( 
+serialNo INT,
+date string,
+loginTime string,
+logoutTime string,
+duration string,
+pSerialNo int,
+pDate string,
+totalChats int,
+avgResponseTime string,
+avgResolutionTime string,
+avgRating decimal(3,2),
+totalfeedback int
+)
+partitioned by(name string)
+clustered by(serialNo) into 5 buckets;
+
+set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.enforce.bucketing = true;
+
+insert into agent_data_partitioned_clustered partition(name)
+select
+alr.serialNo, 
+from_unixtime(unix_timestamp(alr.date), 'dd-MMM-yy') as loginDate,
+from_unixtime(unix_timestamp(alr.loginTime), 'HH:mm:ss') as loginTime,
+from_unixtime(unix_timestamp(alr.logoutTime), 'HH:mm:ss') as logoutTime,
+concat(cast(floor(alr.duration/3600) as int),':',lpad(cast(floor((alr.duration%3600)/60) as int),2,'0'),':',lpad(cast(floor(alr.duration%60) as int),2,'0')) as duration,
+ap.serialNo as pSerialNo,
+from_unixtime(unix_timestamp(ap.date), 'M/dd/yyyy') as performanceDate,
+ap.totalChats,
+concat(cast(floor(ap.avgResponseTime/3600) as int),':',lpad(cast(floor((ap.avgResponseTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResponseTime%60) as int),2,'0')) as averageResponseTime,
+concat(cast(floor(ap.avgResolutionTime/3600) as int),':',lpad(cast(floor((ap.avgResolutionTime%3600)/60) as int),2,'0'),':',lpad(cast(floor(ap.avgResolutionTime%60) as int),2,'0')) as averageResolutionTime,
+avgRating,
+totalFeedback,
+alr.name
+from agent_logging_report alr
+join agent_performance ap on lower(trim(alr.name)) = lower(trim(ap.name));
